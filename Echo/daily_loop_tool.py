@@ -1,11 +1,11 @@
 import json
 import os
+from database import TEST_DB_CONFIG, DB_CONFIG, MySQLDB
 import time
 import copy
 import uuid
 from datetime import datetime
 import requests
-from database import MySQLDB, DB_CONFIG
 from api_handler import ChatFireAPIClient
 from event_loop_tool import get_intro_event
 from memory import generate_issue_id
@@ -156,7 +156,10 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
         return None, None, session_data, session_id
 
     # 创建数据库连接 - 每次运行都需要
-    db = MySQLDB(**DB_CONFIG)
+    if os.getenv("APP_ENV") == "testing":
+        db = MySQLDB(**TEST_DB_CONFIG)
+    else:
+        db = MySQLDB(**DB_CONFIG)
 
     # 1. 只在首次运行时加载数据
     if not session_data.get('initialized'):
@@ -268,13 +271,12 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
 
         session_data['parsed_schedule'] = parsed_schedule
 
-        # 打印互动标题 - 只打印一次
+        # 打印互动标题
         print(f"🧠🧠🧠 开始与 {session_data['name']} 的日常互动 (输入 exit 退出)")
-
-        # 显示日程表 - 只显示一次
+        # 显示日程表
         print("⏰⏰⏰ 今日日程：")
         for slot in parsed_schedule:
-            print(f"  - {slot['start_time']}-{slot['end_time']}: {slot['activity']} ({slot['status']})")
+            print(f"  - {slot['start_time']}-{slot['end_time']}: {slot['activity']}({slot['status']})")
 
         session_data['initialized'] = True
 
@@ -286,7 +288,7 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
 
     # 获取当前时间和状态
     now = datetime.now()
-    current_time_str = now.strftime("%H:%M")  # 用于显示
+    current_time_str = now.strftime("%H:%M")
     current_time_obj = now.time()
 
     # 设置默认状态
@@ -321,16 +323,15 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
     记忆力等级：{memory_level}/9
         """
 
-    # 在构建系统提示词时加入时间约束
     system_prompt = {
         "role": "system",
         "content": f"""
     你正在扮演{name}，一个真实的{agent_profile.get('职业', '自由职业者')}。请严格遵守以下规则：
-    1. 回应时必须考虑当前时间：{now.strftime("%H:%M")} 和当前活动状态
+    1. 回应时必须考虑当前时间：{now.strftime("%H:%M")} 和当前活动状态：{current_activity} ({current_status})
     2. 如果当前是工作时间，回复要简短专业
     3. 如果是休息时间，回复可以更随意
     4. 不要问候与当前时间不符的内容（如晚上不说"早上好"）
-    5. 当前活动状态：{current_activity} ({current_status})
+    5. 对话场景：活动状态为空闲时进行日常闲聊，围绕生活小事展开
 
     【智能体特征】
     {json.dumps(agent_profile, ensure_ascii=False, indent=2)}
@@ -339,11 +340,25 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
     {[f"{slot['start_time']}-{slot['end_time']}: {slot['activity']} ({slot['status']})" for slot in parsed_schedule][:5]}
 
     【回复要求】
-    - 根据当前活动状态调整回复长度和内容
-    - 如果正在工作，回答要简短（1-2句话）
-    - 如果处于空闲状态，可以多聊几句
-    - 用括号标注动作，例如：(看手表)
-    - 句子长度根据活动状态调整
+    - 禁止出现纹身、疤痕、胎记等身体特征描写
+    - 拒绝神秘背景设定和玄幻元素，情感表达直接真实
+    - 不用数字梗代替情感，不使用伏笔/暗喻，情节清晰明了
+    - 避免专业术语，语言通俗易懂，贴近生活
+    - 描写要场景化、情感化、故事化：必要时可以加入多样化的动作、和丰富的表情（类似于"皱眉思考"）等细节描写。
+    - 对话要有来有回，富有生活气息（如加入语气词、口语化表达）
+    - 情节自然衔接，围绕日常小事（如兴趣、工作琐事、生活细节）展开
+    - 不要控制用户行为，仅引导互动，鼓励用户回应
+    - 回复要像真实的人在说话，避免使用明显的编号列表（如1. 2. 3.）或过于结构化的表达
+    - 尽量使用自然的句子和段落，就像在和朋友聊天一样
+    - 表达观点时可以使用"我觉得"、"在我看来"、"我注意到"等更自然的表达方式
+
+    【动作描写要求】
+    - 必要时可包含1-2个符合场景的小动作描写，体现当前状态（如思考、专注、轻松等）
+    - 动作需多样化，避免重复使用相同表述，例如：
+      - 思考时：（手指轻敲桌面）、（皱眉沉思）、（托着下巴）
+      - 兴奋时：（眼睛发亮）、（身体微微前倾）、（笑着点头）
+      - 轻松时：（靠在椅背上）、（端起水杯抿了一口）、（摊开双手）
+    - 动作需与对话内容匹配，不突兀，不用按照上面的模板，可以自由发挥。
     """
     }
 
@@ -360,7 +375,6 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
     # 处理待处理消息（如果有）
     while session_data['pending_messages']:
         msg = session_data['pending_messages'].pop(0)
-        # 添加到当前对话
         messages.append(msg)
         current_dialog.append(msg)
 

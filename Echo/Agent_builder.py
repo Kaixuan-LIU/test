@@ -4,6 +4,7 @@ import random
 import os
 from typing import Dict, Any, List, Tuple
 from pathlib import Path
+from app_config import config
 from Event_builder import EventTreeGenerator
 from api_handler import ChatFireAPIClient
 from database import MySQLDB
@@ -17,12 +18,7 @@ class AgentTemplateManager:
         self.user_id = user_id
         # 使用远程数据库配置
         self.db = MySQLDB(
-            host="101.200.229.113",
-            user="gongwei",
-            password="Echo@123456",
-            database="echo",
-            port=3306,
-            charset="utf8mb4"
+            **config.DB_CONFIG
         )
 
         # 从数据库加载MBTI知识库
@@ -106,12 +102,7 @@ class AgentBuilder:
         self.user_id = user_id
         # 使用远程数据库配置
         self.db = MySQLDB(
-            host="101.200.229.113",
-            user="gongwei",
-            password="Echo@123456",
-            database="echo",
-            port=3306,
-            charset="utf8mb4"
+            ** config.DB_CONFIG
         )
         self.mbti_knowledge = self._load_mbti_from_db()
         self.tag_pool = self._load_tag_templates()

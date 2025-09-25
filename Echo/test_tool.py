@@ -1,4 +1,5 @@
 import os
+os.environ["APP_ENV"] = "testing"
 import json
 import random
 from collections import defaultdict
@@ -214,9 +215,7 @@ class AgentGenerator:
     def generate_and_save_agents(self, num_per_world: int = 3) -> List[Dict]:
         """批量生成并保存智能体"""
         agents = self.generate_agents(num_per_world)  # 生成
-        self.save_agents(agents)  # 保存
         return agents
-
 
 def run_generation(world_descriptions: List[str], base_keywords: List[str], num_per_world: int = 3):
     """运行批量生成"""
@@ -249,4 +248,4 @@ if __name__ == "__main__":
         BASE_KEYWORDS,
         num_per_world=1  # 每个世界观生成数量
     )
-    print(f"✅ 生成完成! 智能体ID列表: {agent_ids}")
+    print(f"✅ 生成完成! ")

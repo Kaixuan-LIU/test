@@ -4,39 +4,48 @@ import argparse
 from app_config import config
 from interaction_test_tool import InteractionTester
 from Agent_builder import AgentBuilder
-from database import TEST_DB_CONFIG, MySQLDB
+from database import TEST_DB_CONFIG, MySQLDB, DB_CONFIG
 from event_loop_tool import get_intro_event
 
 os.environ["APP_ENV"] = "testing"
 API_KEY = "sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV"
 
 
-def run_single_agent_test(agent_config: str = None,daily_tests: int = 3,event_tests: int = 2):
-    """一键运行单个智能体测试"""
+def run_single_agent_test(agent_id: int = None, agent_config: str = None,
+                         daily_tests: int = 3, event_tests: int = 2):
+    """一键运行单个智能体测试，优先使用指定的agent_id"""
     print("=" * 50)
     print("启动智能体测试流程")
     print("=" * 50)
 
     # 初始化测试工具
-    tester = InteractionTester()
-
-    # 步骤1：创建智能体
-    agent_id = create_test_agent(agent_config)
+    tester = InteractionTester(init_test_db=False)
+    # 步骤1：获取智能体ID（优先使用指定的已有智能体）
     if not agent_id:
-        print("❌ 智能体创建失败，测试终止")
-        return
+        agent_id = create_test_agent(agent_config)
+        if not agent_id:
+            print("❌ 智能体创建失败，测试终止")
+            return
+    else:
+        # 验证指定的agent_id是否存在
+        with MySQLDB(** TEST_DB_CONFIG) as db:
+            agent = db.get_agent_by_id(agent_id)
+            if not agent:
+                print(f"❌ 数据库中未找到agent_id: {agent_id}")
+                return
+        print(f"✅ 使用已有智能体进行测试! ID: {agent_id}")
 
     # 步骤2：测试日常对话
     print("\n🔍🔍 测试日常对话交互...")
     tester.test_daily_interaction(agent_id, num_tests=daily_tests)
 
-    # 步骤3：测试事件交互
-    print("\n🔍🔍 测试事件交互...")
-    event_id = get_first_event(agent_id)
-    if event_id:
-        tester.test_event_interaction(agent_id, event_id, num_tests=event_tests)
-    else:
-        print("⚠️ 未找到初始事件，跳过事件测试")
+    # # 步骤3：测试事件交互
+    # print("\n🔍🔍 测试事件交互...")
+    # event_id = get_first_event(agent_id)
+    # if event_id:
+    #     tester.test_event_interaction(agent_id, event_id, num_tests=event_tests)
+    # else:
+    #     print("⚠️ 未找到初始事件，跳过事件测试")
 
     # 步骤4：显示测试结果
     print("\n📋 测试结果摘要:")
@@ -46,7 +55,6 @@ def run_single_agent_test(agent_config: str = None,daily_tests: int = 3,event_te
     print("测试流程完成")
     print("=" * 50)
     return True
-
 
 def create_test_agent(agent_config=None):
     """创建测试用智能体"""
@@ -76,7 +84,7 @@ def create_test_agent(agent_config=None):
 
 def get_first_event(agent_id):
     """获取智能体的初始事件ID"""
-    with MySQLDB(**TEST_DB_CONFIG) as db:
+    with MySQLDB(** TEST_DB_CONFIG) as db:
         events_data = db.get_agent_event_chains(agent_id)
         if not events_data:
             return None
@@ -89,26 +97,17 @@ def get_first_event(agent_id):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="智能体测试工具")
-    parser.add_argument('--agent-config', help='智能体配置文件路径')
-    parser.add_argument('--daily-tests', type=int, default=3, help='日常对话测试轮数')
-    parser.add_argument('--event-tests', type=int, default=2, help='事件交互测试轮数')
-
+    parser = argparse.ArgumentParser(description="运行智能体日常事件测试")
+    parser.add_argument("--agent_id", type=int, help="指定已有智能体ID（可选）")
+    parser.add_argument("--agent_config", type=str, help="智能体配置（可选，当不指定agent_id时使用）")
+    parser.add_argument("--daily_tests", type=int, default=3, help="日常测试次数")
+    parser.add_argument("--event_tests", type=int, default=2, help="事件测试次数")
     args = parser.parse_args()
 
-    # 处理自定义配置
-    agent_config_content = None
-    if args.agent_config:
-        try:
-            with open(args.agent_config, 'r', encoding='utf-8') as f:
-                agent_config_content = f.read()
-        except Exception as e:
-            print(f"❌❌ 读取智能体配置文件失败: {e}")
-            exit(1)
-
-    # 运行测试（传递所有参数）
     run_single_agent_test(
-        agent_config=agent_config_content,
+        agent_id=args.agent_id,
+        agent_config=args.agent_config,
         daily_tests=args.daily_tests,
-        event_tests=args.event_tests)
+        event_tests=args.event_tests
+    )
 

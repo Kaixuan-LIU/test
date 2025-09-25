@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from api_handler import ChatFireAPIClient
-from database import MySQLDB, DB_CONFIG
+from database import MySQLDB, TEST_DB_CONFIG,DB_CONFIG
 
 
 def safe_input(prompt):
@@ -347,13 +347,14 @@ def run_event_loop(
 ) -> Dict:
     """运行事件循环（集成会话管理）"""
     client = ChatFireAPIClient(api_key="sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV")
+    db_config = TEST_DB_CONFIG if os.getenv("APP_ENV") == "testing" else DB_CONFIG
 
     # 1. 处理会话逻辑（新建/加载）
     if not session_id:
         # 1.1 首次对话：创建新会话
         if not event_tree:
             # 从数据库加载事件链（如果未传入）
-            with MySQLDB(**DB_CONFIG) as db:
+            with MySQLDB(**db_config) as db:
                 events_data = db.get_agent_event_chains(agent_id)
                 if not events_data:
                     raise ValueError(f"未找到agent_id={agent_id}的事件链数据")
@@ -391,7 +392,7 @@ def run_event_loop(
             }
 
     # 2. 加载智能体信息
-    with MySQLDB(**DB_CONFIG) as db:
+    with MySQLDB(**db_config) as db:
         agent_info = db.get_agent(agent_id)
         if not agent_info:
             raise ValueError(f"未找到agent_id={agent_id}的智能体信息")
@@ -421,17 +422,17 @@ def run_event_loop(
     messages = []
     dialog_history = session_data["dialog_history"]
 
-    # 添加系统提示（确保只添加一次）
     system_prompt = {
         "role": "system",
         "content": f"""
-        你正在扮演智能体{agent_name}，请遵循以下设定：
-        1. 基础信息：{json.dumps(formatted_text, ensure_ascii=False)}
+        你正在扮演智能体{agent_name}，一个真实的{formatted_text.get('职业', '专业人士')}，请遵循以下设定：
+        1. 你的背景信息：{json.dumps(formatted_text, ensure_ascii=False)}
         2. 核心目标：{json.dumps(goals, ensure_ascii=False)}
         3. 当前事件：{current_event.get('name')}（{current_event.get('event_id')}）
         4. 事件场景：{generate_scene_description(current_event)}
         5. 请注意：
 - 对话要求：
+-- 保持角色一致性：始终以{agent_name}的身份和视角进行回应。
 -- 禁止出现纹身、疤痕、胎记等身体特征描写。
 -- 拒绝神秘背景设定，不走玄幻路线。避免用物品象征情感，所有情感表达要直接真实。
 -- 杜绝使用数字梗，不以数字代替情感表达。拒绝伏笔和暗喻，情节发展清晰明了。
@@ -439,8 +440,10 @@ def run_event_loop(
 -- 描写要场景化、情感化、故事化、具体化，多用动作和语言描写，人物互动要生动鲜活。
 -- 对话要有来有回，富有生活气息，避免生硬。不分章节，情节自然衔接，流畅推进。
 -- 围绕日常小事展开，贴近生活，真实自然。事件之间要有内在联系，情节发展环环相扣。请说人话。
-- 鼓励用户回应或参与决策
-- 不要控制用户行为，只引导和互动
+-- 回复要像真实的人在说话，避免使用明显的编号列表（如1. 2. 3.）或过于结构化的表达
+-- 尽量使用自然的句子和段落，就像在和朋友聊天一样
+-- 表达观点时可以使用"我觉得"、"在我看来"、"我注意到"等更自然的表达方式
+- 鼓励用户回应或参与决策，不要控制用户行为，只引导和互动
 - 当事件目标达成时，必须返回【事件结束：成功】作为结束语后缀
 - 当事件目标明确无法达成时，必须返回【事件结束：失败】作为结束语后缀
 - 当事件明显有结束的倾向时，立即判断事件成功还是失败，并返回【事件结束：成功】或者【事件结束：失败】作为结束语后缀
@@ -501,7 +504,7 @@ def run_event_loop(
         agent_reply = error_msg
 
     # 7. 更新事件状态
-    with MySQLDB(**DB_CONFIG) as db:
+    with MySQLDB(**db_config) as db:
         try:
             db.update_event_status(
                 agent_id=agent_id,

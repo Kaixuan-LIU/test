@@ -3,6 +3,7 @@ import json
 import re
 import time
 from typing import List, Dict
+from app_config import config
 from api_handler import ChatFireAPIClient
 from database import MySQLDB
 
@@ -16,12 +17,7 @@ class EventTreeGenerator:
         self.agent_builder = agent_builder
         # 智能体ID
         self.db = MySQLDB(
-            host="101.200.229.113",
-            user="gongwei",
-            password="Echo@123456",
-            database="echo",
-            port=3306,
-            charset="utf8mb4"
+            **config.DB_CONFIG
         )
         self.base_info = self._load_base_info_from_db()
         self.life_events = self._load_life_events_from_db()
@@ -230,9 +226,6 @@ class EventTreeGenerator:
             return json.loads(fixed_content)
         except:
             return {}
-
-        return {}
-
     def generate_events_for_stage(self, stage):
         prompt = self.build_prompt(stage)
         max_retries = 3
