@@ -2,6 +2,8 @@ import json
 import uuid
 import random
 import os
+import threading
+import time
 from typing import Dict, Any, List, Tuple
 from pathlib import Path
 from app_config import config
@@ -332,10 +334,12 @@ Tag池模板：
   - 标签名 (类别: [类别], 触发条件: [条件], 影响: [影响], 存在依据: [说明])
   ...
 
-注意：
+注意事项：
 1. 只列出角色实际存在的标签，不存在的标签不要列出
 2. 存在依据要结合角色的背景信息
 3. 状态标签和经历标签需满足触发条件才存在
+4. 所有标签描述必须完整，特别是"存在依据"字段不能缺失
+5. 每个标签的描述必须完整闭合，确保括号匹配
 """
         return prompt
 
@@ -448,6 +452,13 @@ Tag池模板：
 
 【状态信息】
 {agent_state_text}
+
+注意事项：
+1. 输出必须是严格符合JSON语法的完整对象
+2. 所有键值对必须完整闭合，不得遗漏逗号、引号或大括号
+3. 不要在JSON对象前后添加任何额外的文本或说明
+4. 确保所有的字符串都使用双引号包围
+5. 不要使用单引号或三重引号
 """
         messages = [{"role": "user", "content": prompt}]
         response = self.client.call_api(
@@ -474,6 +485,8 @@ Tag池模板：
             print("❌❌❌❌ 未找到有效的JSON对象结构")
             json_content = "{}"
 
+        # 初始化agent_id为None
+        agent_id = None
         try:
             agent_data = json.loads(json_content)
             mbti_type = "INFP"  # 默认值
@@ -641,6 +654,13 @@ Tag池模板：
 {life_events}
 
 请以 JSON 数组形式输出所有目标。
+
+注意事项：
+1. 输出必须是严格符合JSON语法的数组
+2. 不要在JSON数组前后添加任何额外的文本或说明
+3. 确保所有的字符串都使用双引号包围
+4. 确保所有对象和数组都正确闭合
+5. 不要使用单引号或三重引号
 """
         messages = [{"role": "user", "content": prompt}]
         response = self.client.call_api(
@@ -687,6 +707,11 @@ Tag池模板：
                     print(f"❌ 智能体目标存入数据库失败（agent_id: {agent_id}）")
             except json.JSONDecodeError as e:
                 print(f"❌ JSON 解析错误，无法处理目标数据：{e}")
+                # 保存原始响应内容以便调试
+                debug_file = f"goal_debug_{agent_id}.json"
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"📝 原始响应已保存到 {debug_file} 供调试")
             except Exception as e:
                 print(f"❌ 处理目标数据时发生异常：{e}")
 
@@ -771,7 +796,7 @@ Tag池模板：
             }
 
             if agent_id:
-                print(f"🔗 开始生成事件链 (agent_id: {agent_id})")
+                print(f"🔗 开始生成初始事件 (agent_id: {agent_id})")
                 generator = EventTreeGenerator(
                     agent_name=name,  # 1. 智能体名称
                     api_key=self.client.api_key,  # 2. API密钥
@@ -779,13 +804,18 @@ Tag池模板：
                     user_id=self.user_id,  # 4. 用户ID（符合表结构要求）
                     agent_builder=self  # 5. 新增：传递 AgentBuilder 实例（解决参数缺失错误）
                 )
-                full_event_tree = generator.generate_and_save()
-            generator.generate_and_save()
+                
+                # 只生成初始事件
+                initial_event_tree = generator.generate_initial_event_only()
+                
+                print(f"✅ 智能体初始化完成，初始事件已生成 (agent_id: {agent_id})")
 
             return agent_data
 
         except Exception as e:
             print(f"❌❌❌❌ 智能体构建失败：{str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
 

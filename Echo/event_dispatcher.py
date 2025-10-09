@@ -4,6 +4,7 @@ import random
 import hashlib
 import time
 from typing import List, Dict
+from Event_builder import EventTreeGenerator
 from api_handler import ChatFireAPIClient
 
 
@@ -23,6 +24,63 @@ class EventDispatcher:
         self.history_messages = history_messages
         self.api_client = api_client
         self.agent_name = agent_name
+
+    def check_stage_completion(self) -> bool:
+        """检查当前阶段是否所有事件都已完成"""
+        if not self.all_events:
+            return False
+
+        current_stage = self._get_current_stage()
+        if not current_stage:
+            return False
+
+        stage_events = current_stage.get("事件列表", [])
+        completed_count = sum(1 for e in stage_events
+                              if e.get("event_id") in self.completed_events)
+
+        # 所有主线事件完成即认为阶段完成
+        main_events = [e for e in stage_events if e.get("type") == "主线"]
+        completed_main = sum(1 for e in main_events
+                             if e.get("event_id") in self.completed_events)
+
+        return completed_main == len(main_events)
+
+    def get_next_stage_events(self):
+        """获取下一阶段事件（调用生成器生成）"""
+        # 获取前序事件
+        previous_events = []
+        for stage in self.all_events:
+            previous_events.extend(stage.get("事件列表", []))
+
+        # 调用生成器生成下一阶段事件
+        generator = EventTreeGenerator(
+            agent_name=self.agent_name,
+            api_key=self.api_client.api_key,
+            agent_id=self.agent_profile.get("agent_id"),
+            user_id=self.agent_profile.get("user_id"),
+            agent_builder=None
+        )
+        # 加载现有事件树
+        generator.full_event_tree = self.all_events
+        generator.current_stage_index = len(self.all_events) - 1
+        if self.all_events:
+            last_stage = self.all_events[-1]
+            last_event = last_stage["事件列表"][-1] if last_stage["事件列表"] else {}
+            generator.last_event_id = last_event.get("event_id", "E001")
+
+        # 生成下一阶段事件
+        new_events = generator.generate_next_stage_events(previous_events)
+        if new_events:
+            self.all_events = generator.full_event_tree
+            return new_events
+        return []
+
+    def _get_current_stage(self):
+        """获取当前阶段"""
+        if not self.all_events:
+            return None
+        return self.all_events[-1] if self.all_events else None
+
 
     def analyze_state_from_history(self) -> Dict:
         """

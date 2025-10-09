@@ -12,6 +12,10 @@ def safe_input(prompt):
     print(prompt, end='', flush=True)
     return sys.stdin.readline().rstrip('\n')
 def get_intro_event(event_tree: list) -> dict:
+    # 检查事件树是否为空
+    if not event_tree:
+        return None
+        
     # 检查是否是分层结构（包含阶段）
     if isinstance(event_tree[0], dict) and "事件列表" in event_tree[0]:
         # 分层结构：遍历阶段找事件
@@ -25,6 +29,9 @@ def get_intro_event(event_tree: list) -> dict:
         for event in event_tree:
             if isinstance(event, dict) and event.get("event_id") == "E001":
                 return event
+    
+    # 如果没找到初始事件，返回None
+    return None
 
 
 def generate_scene_description(event_data) -> str:
@@ -383,13 +390,45 @@ def run_event_loop(
 
     else:
         # 1.2 继续对话：加载已有会话
-        session_data, is_ended = load_session(session_id)
-        if is_ended:
-            return {
-                "error": "对话已结束",
-                "session_id": session_id,
-                "is_ended": True
+        try:
+            session_data, is_ended = load_session(session_id)
+            if is_ended:
+                return {
+                    "error": "对话已结束",
+                    "session_id": session_id,
+                    "is_ended": True
+                }
+        except ValueError as e:
+            # 如果会话不存在，创建新会话
+            print(f"⚠️ {e}，创建新会话")
+            if not event_tree:
+                # 从数据库加载事件链（如果未传入）
+                with MySQLDB(**db_config) as db:
+                    events_data = db.get_agent_event_chains(agent_id)
+                    if not events_data:
+                        raise ValueError(f"未找到agent_id={agent_id}的事件链数据")
+                    chain_json = events_data[0]['chain_json']
+                    event_tree = json.loads(chain_json).get('event_tree', [])
+            
+            # 初始化事件ID
+            initial_event_id = event_id or get_intro_event(event_tree).get("event_id") or f"EVT_{uuid.uuid4()}"
+            
+            # 创建会话
+            session_id = create_session(
+                user_id=user_id,
+                agent_id=agent_id,
+                event_tree=event_tree,
+                initial_event_id=initial_event_id
+            )
+            
+            # 初始化会话数据
+            session_data = {
+                "current_event_id": initial_event_id,
+                "event_tree": event_tree,
+                "dialog_history": [],
+                "event_status": "进行中"
             }
+            is_ended = False
 
     # 2. 加载智能体信息
     with MySQLDB(**db_config) as db:
@@ -514,17 +553,82 @@ def run_event_loop(
         except Exception as e:
             print(f"❌ 数据库状态更新失败: {str(e)}")
 
-    # 8. 确定下一个事件
+    # 8. 如果当前事件成功完成，检查是否需要生成下一阶段的事件
+    if event_status == "成功":
+        try:
+            # 检查是否需要生成下一阶段事件
+            from Event_builder import EventTreeGenerator
+            from Agent_builder import AgentBuilder
+            
+            # 创建AgentBuilder实例
+            agent_builder = AgentBuilder(api_key=client.api_key, user_id=user_id)
+            
+            generator = EventTreeGenerator(
+                agent_name=agent_name,
+                api_key=client.api_key,
+                agent_id=agent_id,
+                user_id=user_id,
+                agent_builder=agent_builder  # 传递AgentBuilder实例
+            )
+            
+            # 检查当前事件链状态
+            status = generator.check_background_generation_status()
+            
+            # 如果事件链未完成，生成下一阶段事件
+            if status != "completed":
+                try:
+                    # 获取当前事件链
+                    with MySQLDB(**db_config) as db:
+                        events_data = db.get_agent_event_chains(agent_id)
+                        if events_data:
+                            chain_json = events_data[0]['chain_json']
+                            event_tree_data = json.loads(chain_json).get('event_tree', [])
+                            
+                            # 计算当前事件数量
+                            total_events = sum(len(stage.get('事件列表', [])) for stage in event_tree_data)
+                            
+                            # 生成下一阶段事件
+                            stages = generator.generate_lifecycle_stages()
+                            if len(stages) > len(event_tree_data):  # 还有未生成的阶段
+                                next_stage = stages[len(event_tree_data)]
+                                print(f"🔍 正在生成下一阶段事件：{next_stage.get('阶段', '未知阶段')} ...")
+                                next_stage_events = generator.generate_events_for_stage(next_stage, total_events + 1)
+                                
+                                # 将新阶段事件添加到事件树中
+                                event_tree_data.append(next_stage_events)
+                                
+                                # 更新数据库中的事件链
+                                event_chain_data = {
+                                    "version": "1.0",
+                                    "event_tree": event_tree_data
+                                }
+                                updated_chain_json = json.dumps(event_chain_data, ensure_ascii=False, indent=2)
+                                # 创建新的数据库连接实例而不是重用已关闭的连接
+                                with MySQLDB(**db_config) as new_db:
+                                    new_db.insert_agent_event_chain(
+                                        user_id=user_id,
+                                        agent_id=agent_id,
+                                        chain_json=updated_chain_json
+                                    )
+                                print(f"✅ 新阶段事件已添加到事件链中")
+                except Exception as e:
+                    print(f"⚠️ 生成下一阶段事件时出错: {e}")
+                    import traceback
+                    traceback.print_exc()
+        except Exception as e:
+            print(f"⚠️ 初始化事件生成器时出错: {e}")
+
+    # 9. 确定下一个事件
     next_event = get_next_event_from_chain(session_data["event_tree"], dialog_history,
                                            client) if event_status == "成功" else None
     next_event_id = next_event["event_id"] if next_event else current_event_id
     session_data["current_event_id"] = next_event_id
     session_data["event_status"] = event_status
 
-    # 9. 保存会话更新
+    # 10. 保存会话更新
     update_session(session_id, session_data, is_ended)
 
-    # 10. 返回结果
+    # 11. 返回结果
     return {
         "content": agent_reply,
         "issue_id": next_event_id,

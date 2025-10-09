@@ -525,7 +525,7 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
                     client = ChatFireAPIClient(
                         api_key="sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV",
                         base_url="https://api.chatfire.cn",
-                        default_model="deepseek-chat"
+                        default_model="deepseek-v3"
                     )
                 except Exception as e:
                     print(f"⚠️ 创建API客户端失败: {e}")

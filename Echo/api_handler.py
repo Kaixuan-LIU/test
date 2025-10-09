@@ -9,7 +9,7 @@ class ChatFireAPIClient:
             self,
             api_key: str = "sk-Ss0zBUF0GXksmrHrgw3CF1ECl8M7aQVHjlBXIWpPLyKxGLZf",
             base_url: str = "https://api.chatfire.cn",
-            default_model: str = "gpt-4o"
+            default_model: str = "deepseek-v3"
     ):
         """
         初始化API客户端

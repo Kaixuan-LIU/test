@@ -22,6 +22,7 @@ sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
+
 def safe_input(prompt):
     print(prompt, end='', flush=True)
     return sys.stdin.readline().rstrip('\n')
@@ -38,9 +39,8 @@ def run_full_pipeline(user_input: str, user_id: int):
 
     agent_id = agent_data["agent_id"]
     name = agent_data["agent_name"]
-    generator = EventTreeGenerator(agent_name=name, api_key=API_KEY, agent_id=agent_id, user_id=user_id,agent_builder=builder)
-    full_event_tree = generator.generate_and_save()
-    print("✅初始化完成，智能体角色与事件链构建完毕。")
+    # 注意：这里不再直接调用generate_and_save，而是依靠AgentBuilder中的后台线程机制
+    print("✅初始化完成，智能体角色与初始事件构建完毕")
     print(f"✅ 智能体构建成功，ID: {agent_data['agent_id']}")
 
     # 创建数据库连接
@@ -62,7 +62,7 @@ def run_full_pipeline(user_input: str, user_id: int):
 
     # 2. 从数据库获取目标
     goals = ""
-    with db as db_conn:
+    with MySQLDB(**DB_CONFIG) as db_conn:  # 使用新的数据库连接实例
         goals_data = db_conn.get_agent_goals(agent_id)
         if goals_data:
             try:
@@ -75,7 +75,7 @@ def run_full_pipeline(user_input: str, user_id: int):
 
     # 3. 从数据库获取事件树
     event_tree = []
-    with db as db_conn:
+    with MySQLDB(**DB_CONFIG) as db_conn:  # 使用新的数据库连接实例
         events_data = db_conn.get_agent_event_chains(agent_id)
         if events_data:
             try:
@@ -86,6 +86,8 @@ def run_full_pipeline(user_input: str, user_id: int):
         else:
             print(f"⚠️ 数据库中未找到事件链（agent_id: {agent_id}）")
 
+    # 返回agent_id用于等待后台任务
+    return agent_id
 
 
 def evaluate_state_change(messages, agent_profile, goals, event_tree):
@@ -338,21 +340,114 @@ def is_valid_time_range(time_range: str) -> bool:
         return False
 
 
+def check_event_chain_status(agent_id: int, user_id: int = 1):
+    """检查指定智能体的事件链生成状态"""
+    # 获取智能体名称
+    db = MySQLDB(**DB_CONFIG)
+    with db as db_conn:
+        agent_info = db_conn.get_agent_by_id(agent_id)
+        if not agent_info:
+            print(f"❌ 未找到agent_id={agent_id}的智能体")
+            return
+
+        try:
+            agent_data = json.loads(agent_info['full_json'])
+            agent_name = agent_data.get('姓名', '未知')
+        except json.JSONDecodeError:
+            print(f"❌ 解析agent_id={agent_id}的智能体信息失败")
+            return
+
+    # 创建事件树生成器实例
+    generator = EventTreeGenerator(
+        agent_name=agent_name,
+        api_key=API_KEY,
+        agent_id=agent_id,
+        user_id=user_id,
+        agent_builder=None  # 此处不需要agent_builder实例
+    )
+
+    # 检查生成状态
+    status = generator.check_background_generation_status()
+
+    status_messages = {
+        "not_started": "尚未开始生成",
+        "in_progress": "正在后台生成中",
+        "completed": "生成已完成",
+        "failed": "生成失败"
+    }
+
+    print(f"📊 智能体 {agent_name} (ID: {agent_id}) 的事件链生成状态: {status_messages.get(status, '未知状态')}")
+    return status
+
+
+def wait_for_background_task_completion(agent_id: int, timeout: int = 300):
+    """等待后台任务完成"""
+    from Event_builder import EventTreeGenerator
+    from Agent_builder import AgentBuilder
+
+    print(f"⏳ 等待后台事件链生成完成 (agent_id: {agent_id})，超时时间: {timeout}秒")
+
+    # 创建事件树生成器实例用于检查状态
+    db = MySQLDB(**DB_CONFIG)
+    try:
+        with db as db_conn:
+            agent_info = db_conn.get_agent_by_id(agent_id)
+            if agent_info:
+                import json
+                agent_data = json.loads(agent_info['full_json'])
+                agent_name = agent_data.get('姓名', '未知')
+            else:
+                agent_name = "未知"
+    except:
+        agent_name = "未知"
+
+    generator = EventTreeGenerator(
+        agent_name=agent_name,
+        api_key=API_KEY,
+        agent_id=agent_id,
+        user_id=1,
+        agent_builder=None
+    )
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        status = generator.check_background_generation_status()
+        if status == "completed":
+            print(f"✅ 后台事件链生成已完成 (agent_id: {agent_id})")
+            return True
+        elif status == "failed":
+            print(f"❌ 后台事件链生成失败 (agent_id: {agent_id})")
+            return False
+        else:
+            print(f"🔄 后台事件链生成中... 当前状态: {status}")
+            time.sleep(10)  # 每10秒检查一次
+
+    print(f"⏰ 等待超时，后台事件链生成可能仍在进行中 (agent_id: {agent_id})")
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="AI 虚拟智能体主程序")
     parser.add_argument('--init', action='store_true', help='初始化主角与事件链')
     parser.add_argument('--daily', action='store_true', help='进入日常互动')
     parser.add_argument('--event', action='store_true', help='运行独立事件循环')
+    parser.add_argument('--check-status', action='store_true', help='检查事件链生成状态')
+    parser.add_argument('--wait-background', action='store_true', help='等待后台事件链生成完成')
     parser.add_argument('--user_id', type=int, default=1, help='用户ID')
     parser.add_argument('--agent_id', type=int, help='智能体ID（用于日常互动）')
     parser.add_argument('--event_id', type=str, help='事件ID')
+    parser.add_argument('--session_id', type=str, help='会话ID（用于继续对话）')
     args = parser.parse_args()
 
     if args.init:
         print("🧠 初始化智能体...")
         print("请输入角色设定（示例：世界观：现实世界 姓名：萧炎 年龄：16 职业：高中生 爱好：音乐、吉他）")
         user_input = safe_input(">>> ")
-        run_full_pipeline(user_input, args.user_id)
+        agent_id = run_full_pipeline(user_input, args.user_id)
+
+        # 如果指定了等待后台任务完成
+        if args.wait_background and agent_id:
+            wait_for_background_task_completion(agent_id)
 
     elif args.daily:
         if not args.agent_id:
@@ -460,51 +555,57 @@ def main():
         else:
             print("ℹ️ 可用命令: --init | --daily")
 
-
+    elif args.check_status:
+        if not args.agent_id:
+            print("❌ 请提供智能体ID（使用 --agent_id 参数）")
+            return
+        check_event_chain_status(args.agent_id, args.user_id)
 
     elif args.event:
         if not args.agent_id or not args.event_id:
-            print("❌❌❌❌ 请提供智能体ID和事件ID（使用 --agent_id 和 --event_id 参数）")
+            print("❌ 请提供智能体ID和事件ID（使用 --agent_id 和 --event_id 参数）")
             return
-        print(f"🚀🚀🚀🚀 启动事件循环（agent_id: {args.agent_id}, event_id: {args.event_id}）")
-        # 创建数据库连接
-        db = MySQLDB(**DB_CONFIG)
-        # 获取智能体信息
-        with db as db_conn:
-            agent_info = db_conn.get_agent_by_id(args.agent_id)
-            if agent_info:
-                try:
-                    formatted_dict = json.loads(agent_info['full_json'])
-                    print(f"✅ 从数据库加载智能体信息成功（agent_id: {args.agent_id}）")
-                except json.JSONDecodeError as e:
-                    print(f"❌❌❌ 智能体信息JSON解析失败: {e}")
-                    return
-            else:
-                print(f"⚠️ 数据库中未找到智能体信息（agent_id: {args.agent_id}）")
+
+        # 加载智能体信息
+        with MySQLDB(**DB_CONFIG) as db_conn:
+            agent_data = db_conn.get_agent(args.agent_id)
+            if not agent_data:
+                print(f"❌ 未找到智能体（agent_id: {args.agent_id}）")
                 return
 
-        goals = ""
-        with db as db_conn:
+            try:
+                formatted_dict = json.loads(agent_data[0]["full_json"])
+                name = formatted_dict.get("姓名", "智能体")
+                print(f"✅ 从数据库加载智能体信息成功（agent_id: {args.agent_id}）")
+            except Exception as e:
+                print(f"❌ 解析智能体信息失败: {e}")
+                return
+
+            # 加载目标
             goals_data = db_conn.get_agent_goals(args.agent_id)
+            goals = []
             if goals_data:
                 try:
                     goals = json.loads(goals_data[0]['goals_json'])
                     print(f"✅ 从数据库加载目标成功（agent_id: {args.agent_id}）")
-                except json.JSONDecodeError as e:
-                    print(f"❌❌❌ 目标JSON解析失败: {e}")
+                except Exception as e:
+                    print(f"⚠️ 解析目标失败: {e}")
             else:
                 print(f"⚠️ 数据库中未找到目标（agent_id: {args.agent_id}）")
-        # 获取事件树
-        event_tree = []
-        with db as db_conn:
+
+            # 加载事件链
+            event_tree = []
             events_data = db_conn.get_agent_event_chains(args.agent_id)
             if events_data:
                 try:
                     chain_data = json.loads(events_data[0]['chain_json'])
                     event_tree = chain_data.get('event_tree', [])
-                    print(f"✅ 从数据库加载事件链成功（agent_id: {args.agent_id}）")
+                    if event_tree:
+                        print(f"✅ 从数据库加载事件链成功（agent_id: {args.agent_id}）")
+                    else:
+                        print(f"⚠️ 数据库中事件链为空（agent_id: {args.agent_id}）")
                 except json.JSONDecodeError as e:
-                    print(f"❌❌❌ 事件链JSON解析失败: {e}")
+                    print(f"❌ 事件链JSON解析失败: {e}")
             else:
                 print(f"⚠️ 数据库中未找到事件链（agent_id: {args.agent_id}）")
 
@@ -522,21 +623,33 @@ def main():
                             break
                     if target_event:
                         break
+
+        # 检查是否找到了目标事件
         if not target_event:
             print(f"❌❌❌ 未找到事件ID: {args.event_id}")
+            # 检查事件树是否为空
+            if not event_tree:
+                print("⚠️ 事件树为空，请确认智能体是否已正确初始化并生成了事件链")
             return
-        # 添加用户输入提示
+
+        # 获取用户输入
         user_input = safe_input(f"请输入对话内容 (事件:{target_event.get('name', '未命名事件')}): ")
 
+        # 运行事件循环
         result = run_event_loop(
             user_id=args.user_id,
             agent_id=args.agent_id,
             event_id=args.event_id,
             user_input=user_input,
-            event_tree=event_tree
+            session_id=args.session_id,  # 添加session_id参数
+            event_tree=event_tree if not args.session_id else None  # 如果有session_id则不需要event_tree
         )
 
-
+        # 打印智能体回复
+        if "content" in result:
+            print(f"\n{name}> {result['content']}\n")
+        else:
+            print(f"❌ 未收到智能体回复: {result}")
 
 if __name__ == "__main__":
     main()
