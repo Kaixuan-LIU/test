@@ -95,7 +95,13 @@ class AgentTemplateManager:
             print(f"❌ 加载tag模板时发生错误: {str(e)}")
             return {}
 
+
 class AgentBuilder:
+    # 添加类级别的缓存，避免重复加载
+    _mbti_cache = None
+    _tag_pool_cache = None
+    _cache_lock = threading.Lock()
+
     def __init__(self, api_key: str, data_path: str = "agents", user_id: int = 1):
         self.api_key = api_key
         self.client = ChatFireAPIClient(api_key=api_key)
@@ -111,6 +117,11 @@ class AgentBuilder:
 
     def _load_mbti_from_db(self) -> dict:
         """从数据库加载MBTI类型和认知功能数据"""
+        # 检查缓存
+        with AgentBuilder._cache_lock:
+            if AgentBuilder._mbti_cache is not None:
+                return AgentBuilder._mbti_cache
+
         mbti_data = {
             "MBTI_TYPES": {},
             "COGNITIVE_FUNCTIONS": {}
@@ -143,6 +154,12 @@ class AgentBuilder:
                 # 打印加载结果
                 print(
                     f"✅ 成功从数据库加载 MBTI 知识库（共 {len(mbti_data['MBTI_TYPES'])} 种类型，{len(mbti_data['COGNITIVE_FUNCTIONS'])} 种认知功能）")
+                
+                # 缓存结果
+                with AgentBuilder._cache_lock:
+                    if AgentBuilder._mbti_cache is None:
+                        AgentBuilder._mbti_cache = mbti_data
+                        
                 return mbti_data
         except Exception as e:
             print(f"❌ 加载MBTI数据失败：{e}")
@@ -150,6 +167,11 @@ class AgentBuilder:
 
     def _load_tag_templates(self):
         """从数据库 template_type = 'attribute' 中加载tag池数据"""
+        # 检查缓存
+        with AgentBuilder._cache_lock:
+            if AgentBuilder._tag_pool_cache is not None:
+                return AgentBuilder._tag_pool_cache
+
         try:
             with self.db as db:
                 # 查询活跃的attribute类型模板
@@ -173,6 +195,12 @@ class AgentBuilder:
                     tag_pool.update(content)
 
                 print(f"✅ 成功从数据库加载tag模板（共 {len(tag_pool)} 个标签定义）")
+                
+                # 缓存结果
+                with AgentBuilder._cache_lock:
+                    if AgentBuilder._tag_pool_cache is None:
+                        AgentBuilder._tag_pool_cache = tag_pool
+                        
                 return tag_pool
         except json.JSONDecodeError:
             print("错误：数据库中的attribute模板JSON格式不正确")
@@ -731,7 +759,7 @@ Tag池模板：
             from schedule_generator import generate_agent_schedule
             schedule = generate_agent_schedule(basic_info, self.client.api_key)
 
-            # 转换为JSON字符串
+            # 轉換為JSON字符串
             schedule_json = json.dumps(schedule, ensure_ascii=False)
 
             # 存入数据库
@@ -747,7 +775,6 @@ Tag池模板：
                     print(f"❌❌ 智能体时间表存入数据库失败")
 
             return schedule
-
         except Exception as e:
             print(f"❌❌ 生成日程表失败: {str(e)}")
             return {}
@@ -782,7 +809,8 @@ Tag池模板：
             schedule = self.generate_agent_schedule(agent_profile_dict, agent_id)  # 添加agent_id参数
 
             life_event_text = self.generate_life_events(agent_profile_dict, name, agent_id)
-            agent_goals = self.generate_agent_goals(agent_profile_dict, life_event_text, name, agent_id)
+            # 不再在初始化时生成目标，而是后续生成
+            agent_goals = None
 
             # 准备返回数据
             agent_data = {

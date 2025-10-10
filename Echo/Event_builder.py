@@ -78,7 +78,7 @@ class EventTreeGenerator:
             if '事件列表' in stage:
                 previous_events.extend(stage['事件列表'])
         
-        # 构建提示词
+        # 构建提示词 - 只为当前阶段生成事件
         prompt = self.build_stage_event_prompt(current_stage, previous_events)
         
         # 调用API生成事件
@@ -87,14 +87,66 @@ class EventTreeGenerator:
             try:
                 response = self.api_client.call_api([{"role": "user", "content": prompt}])
                 content = response['choices'][0]['message']['content']
+                
+                # 使用更健壮的JSON提取方法
                 events_data = self._extract_json(content)
                 
-                if events_data and isinstance(events_data, dict) and '事件列表' in events_data:
+                # 如果_extract_json失败，尝试直接解析
+                if not events_data:
+                    # 查找内容中的JSON对象
+                    start_index = content.find('{')
+                    end_index = content.rfind('}')
+                    if start_index != -1 and end_index != -1 and end_index > start_index:
+                        json_content = content[start_index:end_index + 1].strip()
+                        try:
+                            events_data = json.loads(json_content)
+                        except json.JSONDecodeError:
+                            print(f"⚠️ JSON解析失败，尝试修复...")
+                            # 尝试修复常见的JSON格式问题
+                            json_content = json_content.replace('\n', '').replace('\r', '')
+                            json_content = re.sub(r',\s*}', '}', json_content)
+                            json_content = re.sub(r',\s*]', ']', json_content)
+                            # 移除可能的多余内容
+                            brace_count = 0
+                            valid_end = 0
+                            for i, char in enumerate(json_content):
+                                if char == '{':
+                                    brace_count += 1
+                                elif char == '}':
+                                    brace_count -= 1
+                                    if brace_count == 0:
+                                        valid_end = i + 1
+                                        break
+                            if valid_end > 0:
+                                json_content = json_content[:valid_end]
+                            events_data = json.loads(json_content)
+                
+                # 验证事件数据结构
+                is_valid = False
+                if events_data and isinstance(events_data, dict):
+                    # 检查是否包含事件列表
+                    if '事件列表' in events_data:
+                        event_list = events_data['事件列表']
+                        if isinstance(event_list, list) and len(event_list) > 0:
+                            # 验证每个事件的基本结构
+                            valid_events = []
+                            for event in event_list:
+                                if isinstance(event, dict) and 'event_id' in event and 'name' in event:
+                                    valid_events.append(event)
+                            
+                            if len(valid_events) > 0:
+                                events_data['事件列表'] = valid_events
+                                is_valid = True
+                
+                if is_valid:
                     stage_events = events_data
                     
-                    # 分配连续事件ID
+                    # 分配连续事件ID（如果还没有的话）
                     if '事件列表' in stage_events:
-                        self._assign_event_ids(stage_events['事件列表'])
+                        # 检查是否需要分配事件ID
+                        needs_id_assignment = any('event_id' not in event for event in stage_events['事件列表'])
+                        if needs_id_assignment:
+                            self._assign_event_ids(stage_events['事件列表'])
                         
                         # 为事件生成issue_id
                         for event in stage_events['事件列表']:
@@ -122,6 +174,8 @@ class EventTreeGenerator:
                         return stage_events['事件列表']
                         
                 print(f"⚠️ 尝试 {attempt + 1}/{max_retries}: 生成的阶段事件结构无效")
+                # 添加调试信息
+                print(f"🔍 响应内容预览: {content[:500]}...")
             except Exception as e:
                 print(f"⚠️ 尝试 {attempt + 1}/{max_retries} 失败: {e}")
                 import traceback
@@ -141,27 +195,73 @@ class EventTreeGenerator:
 
     def build_stage_event_prompt(self, stage: dict, previous_events: list) -> str:
         """构建阶段事件生成提示词，增加前序事件参考"""
-        previous_events_str = json.dumps(previous_events, ensure_ascii=False)
+        previous_events_str = json.dumps(previous_events[-10:], ensure_ascii=False) if previous_events else "[]"  # 只取最近10个事件
         final_stage_prompt = ""
         if self.is_final_stage:
             final_stage_prompt = "\n注意：这是接近结局的阶段，请设计引导用户走向大结局的事件，逐步收尾故事线。"
 
         return f"""
-你是一位沉浸式互动剧情设计专家，用户将与智能体“{self.agent_name}”共同经历连贯真实的事件链。
+你是一位沉浸式互动剧情设计专家，用户将与智能体"{self.agent_name}"共同经历连贯真实的事件链。
 
 基于以下信息为当前阶段生成事件：
 角色信息：{self.base_info}
-阶段信息：{stage}
+阶段信息：{json.dumps(stage, ensure_ascii=False)}
 长期目标：{self.goals}
-前序事件回顾：{previous_events_str}
+前序事件回顾（最近10个）：{previous_events_str}
 {final_stage_prompt}
 
 生成要求：
-1. 包含3个主线事件、5个支线事件和8个日常事件
-2. 事件ID需从{self._get_next_event_id()}开始连续编号
-3. 其他要求同原有事件生成规范
+1. 只为当前阶段生成事件，不要涉及其他阶段
+2. 包含3个主线事件、5个支线事件和8个日常事件
+3. 事件ID需从{self._get_next_event_id()}开始连续编号
+4. 主线事件 importance ≥ 4，必须带有依赖（dependencies）
+5. 支线事件 importance 为 3~4，无需依赖但应有明确触发条件
+6. 日常事件 importance ≤ 2，trigger_conditions 可留空
+7. 所有事件必须包含以下字段：
+   - event_id: 事件ID
+   - type: 事件类型（主线/支线/日常）
+   - name: 事件标题
+   - time: 具体时间
+   - location: 具体地点
+   - characters: 角色列表
+   - cause: 事件起因
+   - process: 事件经过
+   - result: 事件结果
+   - impact: 影响
+   - importance: 重要性（1-5）
+   - urgency: 紧急程度（1-5）
+   - tags: 标签列表
+   - trigger_conditions: 触发条件
+   - dependencies: 依赖事件
 
-输出格式参照build_prompt方法的JSON格式
+严格按照以下JSON格式输出，不要包含任何额外文本：
+{{
+    "阶段": "{stage['阶段']}",
+    "时间范围": "{stage['时间范围']}",
+    "事件列表": [
+        {{
+            "event_id": "E001",
+            "type": "主线",
+            "name": "事件标题",
+            "time": "具体时间",
+            "location": "具体地点",
+            "characters": ["{self.agent_name}", "用户", "配角"],
+            "cause": "事件起因...",
+            "process": "事件经过（有挑战、有互动）...",
+            "result": "事件结果...",
+            "impact": {{
+                "心理状态变化": "...",
+                "知识增长": "...",
+                "亲密度变化": "+3"
+            }},
+            "importance": 5,
+            "urgency": 4,
+            "tags": ["关键词1", "关键词2"],
+            "trigger_conditions": ["处于{stage['阶段']}", "亲密度>30"],
+            "dependencies": []
+        }}
+    ]
+}}
         """
 
     def _get_next_event_id(self) -> str:
@@ -260,24 +360,48 @@ class EventTreeGenerator:
             response = self.api_client.call_api([{"role": "user", "content": prompt}])
             content = response['choices'][0]['message'].get('content', '')
 
+            # 添加调试信息
+            print(f"🔍 接收到的原始响应内容：")
+            print(content)
+            
             # 提取 JSON 内容
             start_index = content.find("[")
             end_index = content.rfind("]")
             if start_index != -1 and end_index != -1 and end_index > start_index:
                 json_content = content[start_index:end_index + 1].strip()
-                stages = json.loads(json_content)
-
-                # 确保结构正确
-                if not isinstance(stages, list):
-                    print("❌ 生成的生命周期阶段数据结构不正确，期望为列表")
-                    return []
-
-                for stage in stages:
-                    if not isinstance(stage, dict) or "阶段" not in stage or "时间范围" not in stage:
-                        print("❌ 生命周期阶段数据结构不完整")
+                
+                # 添加调试信息
+                print(f"🔍 提取的JSON内容：")
+                print(json_content)
+                
+                # 尝试解析JSON
+                try:
+                    stages = json.loads(json_content)
+                    
+                    # 确保结构正确
+                    if not isinstance(stages, list):
+                        print("❌ 生成的生命周期阶段数据结构不正确，期望为列表")
                         return []
-
-                return stages
+                    
+                    for stage in stages:
+                        if not isinstance(stage, dict) or "阶段" not in stage or "时间范围" not in stage:
+                            print("❌ 生命周期阶段数据结构不完整")
+                            return []
+                    
+                    return stages
+                except json.JSONDecodeError as e:
+                    print(f"❌ JSON解析失败: {e}")
+                    # 尝试修复常见的JSON问题
+                    try:
+                        # 修复未转义的引号
+                        json_content = json_content.replace('\\"', '"').replace('"', '\\"')
+                        # 但保留对象内部的引号
+                        json_content = re.sub(r'\\"([^"]*)\\"', r'"\1"', json_content)
+                        stages = json.loads(json_content)
+                        return stages
+                    except json.JSONDecodeError:
+                        print(f"❌ JSON修复尝试失败")
+                        return []
             else:
                 print("❌ 未找到有效的 JSON 数组结构")
                 return []
@@ -665,48 +789,15 @@ class EventTreeGenerator:
 
     def check_background_generation_status(self):
         """
-        检查后台事件链生成状态
+        检查后台事件链生成状态（已废弃）
         返回:
         - "completed": 已完成
         - "in_progress": 正在进行中
         - "not_started": 尚未开始
         - "failed": 失败
         """
-        try:
-            with self.db as db_conn:
-                # 查询事件链记录
-                query = """
-                        SELECT chain_json, created_at, updated_at
-                        FROM agent_event_chains
-                        WHERE agent_id = %s
-                        ORDER BY updated_at DESC LIMIT 1 \
-                        """
-                result = db_conn._execute_query(query, (self.agent_id,))
-
-                if not result:
-                    return "not_started"
-
-                # 检查事件链是否包含完整的事件树
-                chain_data = json.loads(result[0]['chain_json'])
-                event_tree = chain_data.get('event_tree', [])
-
-                # 如果事件树中只有一个阶段且只有一个事件，则认为仍在后台生成中
-                if len(event_tree) == 1 and len(event_tree[0].get('事件列表', [])) == 1:
-                    # 检查第一个事件是否为初始事件
-                    first_event = event_tree[0]['事件列表'][0]
-                    if first_event.get('event_id') == 'E001':
-                        return "in_progress"
-
-                # 如果有多个事件，则认为已完成
-                total_events = sum(len(stage.get('事件列表', [])) for stage in event_tree)
-                if total_events > 1:
-                    return "completed"
-
-                return "in_progress"
-
-        except Exception as e:
-            print(f"❌ 检查后台生成状态失败: {e}")
-            return "failed"
+        # 该方法已废弃，不再使用
+        return "completed"  # 默认返回已完成状态
 
     def save_event_tree(self, filename: str = "full_event_tree.json"):
         try:

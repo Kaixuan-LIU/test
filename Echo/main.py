@@ -16,8 +16,8 @@ from database import MySQLDB, DB_CONFIG
 from event_loop_tool import run_event_loop, get_intro_event
 
 
-API_KEY = "sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV"
-
+# 在文件顶部添加API_KEY定义
+API_KEY = "sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV"  # 使用你的实际API密钥
 sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
@@ -312,6 +312,90 @@ def select_next_event(full_event_tree) -> dict:
 
     return None  # 无有效事件
 
+
+def generate_goals_and_next_events(agent_id: int, user_id: int = 1):
+    """在初始事件完成后生成目标和下一阶段事件"""
+    print(f"🧠 开始生成智能体目标和下一阶段事件 (agent_id: {agent_id})")
+    
+    # 创建数据库连接
+    db = MySQLDB(**DB_CONFIG)
+    
+    # 获取智能体信息
+    with db as db_conn:
+        agent_info = db_conn.get_agent_by_id(agent_id)
+        if not agent_info:
+            print(f"❌ 未找到agent_id={agent_id}的智能体")
+            return False
+            
+        try:
+            agent_data = json.loads(agent_info['full_json'])
+            agent_name = agent_data.get('姓名', '未知')
+        except json.JSONDecodeError:
+            print(f"❌ 解析agent_id={agent_id}的智能体信息失败")
+            return False
+
+    # 创建AgentBuilder实例
+    builder = AgentBuilder(api_key=API_KEY, user_id=user_id)
+    
+    # 检查是否已经生成了目标
+    with db as db_conn:
+        goals_data = db_conn.get_agent_goals(agent_id)
+        if goals_data:
+            print(f"✅ 目标已存在，跳过生成 (agent_id: {agent_id})")
+        else:
+            # 生成目标
+            print(f"🔍 正在生成智能体目标 (agent_id: {agent_id})")
+            try:
+                # 获取生平事件
+                with db as db_conn2:
+                    life_events_data = db_conn2.get_agent_life_events(agent_id)
+                    if life_events_data:
+                        life_events_json = life_events_data[0]['event_json']
+                        life_events = json.loads(life_events_json)
+                        life_events_str = json.dumps(life_events.get('events', []), ensure_ascii=False)
+                    else:
+                        life_events_str = "[]"
+                
+                goals_json = builder.generate_agent_goals(
+                    json.dumps(agent_data, ensure_ascii=False), 
+                    life_events_str, 
+                    agent_name, 
+                    agent_id
+                )
+                
+                if goals_json:
+                    print(f"✅ 智能体目标生成完成 (agent_id: {agent_id})")
+                else:
+                    print(f"❌ 智能体目标生成失败 (agent_id: {agent_id})")
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ 生成目标时出错: {e}")
+                return False
+
+    # 创建事件生成器并生成下一阶段事件
+    generator = EventTreeGenerator(
+        agent_name=agent_name,
+        api_key=API_KEY,
+        agent_id=agent_id,
+        user_id=user_id,
+        agent_builder=builder
+    )
+    
+    try:
+        # 生成下一阶段事件
+        next_events = generator.generate_next_stage_events()
+        if next_events:
+            print(f"✅ 下一阶段事件生成完成 (agent_id: {agent_id})")
+            return True
+        else:
+            print(f"❌ 下一阶段事件生成失败 (agent_id: {agent_id})")
+            return False
+    except Exception as e:
+        print(f"❌ 生成下一阶段事件时出错: {e}")
+        return False
+
+
 def get_intro_event(event_tree: list) -> dict:
     # 检查是否是分层结构（包含阶段）
     if isinstance(event_tree[0], dict) and "事件列表" in event_tree[0]:
@@ -325,6 +409,7 @@ def get_intro_event(event_tree: list) -> dict:
             if isinstance(event, dict) and event.get("event_id") == "E001":
                 return event
     return None
+
 
 def is_valid_time_range(time_range: str) -> bool:
     """验证时间范围格式是否正确"""

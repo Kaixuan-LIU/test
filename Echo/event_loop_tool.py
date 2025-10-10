@@ -4,7 +4,7 @@ import sys
 import uuid
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
-from api_handler import ChatFireAPIClient
+from api_handler import ChatFireAPIClient, send_event_chain_completed_response
 from database import MySQLDB, TEST_DB_CONFIG,DB_CONFIG
 
 
@@ -553,10 +553,10 @@ def run_event_loop(
         except Exception as e:
             print(f"❌ 数据库状态更新失败: {str(e)}")
 
-    # 8. 如果当前事件成功完成，检查是否需要生成下一阶段的事件
+    # 8. 如果当前事件成功完成，检查是否需要生成目标和下一阶段的事件
     if event_status == "成功":
         try:
-            # 检查是否需要生成下一阶段事件
+            # 检查是否需要生成目标和下一阶段事件
             from Event_builder import EventTreeGenerator
             from Agent_builder import AgentBuilder
             
@@ -571,11 +571,31 @@ def run_event_loop(
                 agent_builder=agent_builder  # 传递AgentBuilder实例
             )
             
-            # 检查当前事件链状态
-            status = generator.check_background_generation_status()
+            # 确保正确识别初始事件E001，即使在事件结束后
+            # 检查当前处理的事件是否是初始事件E001
+            initial_event = get_intro_event(session_data["event_tree"])
+            is_initial_event = initial_event and initial_event.get("event_id") == current_event_id
             
-            # 如果事件链未完成，生成下一阶段事件
-            if status != "completed":
+            # 如果是初始事件E001成功完成，直接触发生成目标和下一阶段事件
+            if is_initial_event and current_event_id == "E001":
+                try:
+                    # 导入主函数中的生成方法
+                    from main import generate_goals_and_next_events
+                    
+                    # 生成目标和下一阶段事件
+                    success = generate_goals_and_next_events(agent_id, user_id)
+                    if success:
+                        print(f"✅ 目标和下一阶段事件生成完成 (agent_id: {agent_id})")
+                        # 发送事件链生成完成的响应
+                        send_event_chain_completed_response(agent_id, user_id)
+                    else:
+                        print(f"❌ 目标和下一阶段事件生成失败 (agent_id: {agent_id})")
+                except Exception as e:
+                    print(f"⚠️ 生成目标和下一阶段事件时出错: {e}")
+                    import traceback
+                    traceback.print_exc()
+            # 对于其他已完成的事件，检查是否需要生成下一阶段事件
+            elif current_event_id != "E001":
                 try:
                     # 获取当前事件链
                     with MySQLDB(**db_config) as db:

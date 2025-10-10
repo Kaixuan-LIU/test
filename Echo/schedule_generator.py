@@ -5,51 +5,74 @@ from api_handler import ChatFireAPIClient
 
 
 def generate_agent_schedule(agent_profile: dict, api_key: str) -> dict:
-    client = ChatFireAPIClient(api_key=api_key)
-
-    prompt = f"""
-请根据以下智能体信息生成完整的周日程表（周一到周日）：
+    """生成智能体的日程表"""
+    try:
+        # 构建提示词
+        prompt = f"""
+请根据以下角色信息，为其生成一个合理的周日程表。
+角色信息：
 {json.dumps(agent_profile, ensure_ascii=False, indent=2)}
 
-要求：
-1. 按每日24h安排事件
-2. 包含工作日和周末的不同安排
-3. 白天每个事件持续时间0.5-3小时，夜晚可以安排长时间睡眠时间
-4. 事件内容符合智能体的职业、爱好和个人特点
-5. 为每个时间段分配状态标签："空闲"/"一般忙碌"/"忙碌"，睡眠时间为忙碌
-6. 返回JSON格式：键为星期几，值为该天的日程列表
-7. 示例格式：
+请以JSON格式输出，包含以下字段：
+- 周一：包含多个时间段，每个时间段有start_time、end_time、activity、status
+- 周二：同上
+- ...
+- 周日：同上
+
+示例格式：
 {{
   "周一": [
-    {{"start_time": "07:30", "end_time": "08:00", "activity": "晨练", "status": "一般忙碌"}},
-    {{"start_time": "08:00", "end_time": "09:00", "activity": "早餐", "status": "空闲"}},
-    ...
+    {{
+      "start_time": "09:00",
+      "end_time": "12:00",
+      "activity": "工作",
+      "status": "忙碌"
+    }},
+    {{
+      "start_time": "12:00",
+      "end_time": "13:00",
+      "activity": "午餐",
+      "status": "空闲"
+    }}
   ],
-  "周二": [...],
-  ...
+  "周二": [...]
 }}
 """
 
-    try:
-        response = client.call_api(
-            [{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=3000
-        )
-        content = response["choices"][0]["message"]["content"]
+        # 调用API生成日程表
+        client = ChatFireAPIClient(api_key=api_key)
+        response = client.call_api([{"role": "user", "content": prompt}])
+        content = response['choices'][0]['message']['content']
 
-        # JSON提取
-        if content.strip().startswith("{"):
-            return json.loads(content)
-        start_idx = content.find("{")
-        end_idx = content.rfind("}")
-        if start_idx != -1 and end_idx != -1:
-            return json.loads(content[start_idx:end_idx + 1])
-
+        # 添加调试信息
+        print(f"🔍 接收到的原始响应内容：")
+        print(content)
+        
+        # 提取JSON内容
+        start_index = content.find("{")
+        end_index = content.rfind("}")
+        if start_index != -1 and end_index != -1 and end_index > start_index:
+            json_content = content[start_index:end_index + 1].strip()
+            
+            # 添加调试信息
+            print(f"🔍 提取的JSON内容：")
+            print(json_content)
+            
+            # 尝试解析JSON
+            try:
+                schedule = json.loads(json_content)
+                return schedule
+            except json.JSONDecodeError as e:
+                print(f"❌ JSON解析失败: {e}")
+                print(f"❌ 错误位置: line {e.lineno}, column {e.colno}")
+                print(f"❌ 错误字符: {e.msg}")
+                return generate_default_schedule()
+        else:
+            print("❌ 未找到有效的 JSON 对象结构")
+            return generate_default_schedule()
     except Exception as e:
-        print(f"⚠️ 日程生成错误: {e}")
-
-    return generate_default_schedule(agent_profile)
+        print(f"❌ 生成日程表失败: {e}")
+        return generate_default_schedule()
 
 
 def generate_default_schedule(agent_profile: dict) -> dict:

@@ -124,120 +124,82 @@ def get_agent():
 
 @app.route('/api/daily', methods=['POST'])
 def get_conversation():
-    """
-    日常对话接口：
-    请求体：{"agent_id": "string", "content": "string", "user_id": "string", "session_id": "string(可选)"}
-    返回：{
-        "agent_id": "string",
-        "content": "string",
-        "session_id": "string",
-        "waiting_for_input": bool,
-        "status": "string(active/ended)"
-    }
-    """
-    # 解析请求参数
+    """日常对话接口：单次请求处理一轮交互，返回智能体回复"""
     req_data = request.json
     agent_id = req_data.get("agent_id")
     content = req_data.get("content")
     user_id = req_data.get("user_id")
     session_id = req_data.get("session_id")
 
-    # 验证必填参数
     if not all([agent_id, user_id]):
         return jsonify({"error": "缺少必填参数：agent_id 或 user_id"}), 400
 
-    # 初始化或获取会话状态
-    session_key = f'daily_{session_id}'
-    session_data = (session.get(session_key, {})
-                    or {
-                        'conversation_counter': 0,
-                        'pending_messages': [],
-                        'waiting_for_input': True,
-                        'initialized': False,
-                        'agent_id': agent_id,
-                        'user_id': user_id
-                    })
-
     # 生成新会话ID（如果不存在）
     if not session_id:
-        session_id = str(uuid.uuid4())
+        session_id = f"daily_{uuid.uuid4().hex[:16]}"
+
     try:
-        # 正确使用数据库连接 - 使用 with 语句
         with MySQLDB(**DB_CONFIG) as db:
-            # 在 with 块内执行所有数据库操作
+            # 加载智能体基础数据
             agent_data = db.get_agent_by_id(agent_id)
+            if not agent_data:
+                return jsonify({"error": f"未找到agent_id={agent_id}的智能体"}), 404
+
             goals_data = db.get_agent_goals(agent_id)
             events_data = db.get_agent_event_chains(agent_id)
 
+            # 解析基础数据
+            agent_profile = json.loads(agent_data['full_json'])
+            goals = json.loads(goals_data[0]['goals_json']) if goals_data else []
+            event_tree = json.loads(events_data[0]['chain_json']) if events_data else []
+
+            # 关键修改：单次调用run_daily_loop处理当前用户输入，不循环
             messages, name, new_session_data, session_id = run_daily_loop(
-                agent_profile=json.loads(agent_data['full_json']),
-                goals=json.loads(goals_data[0]['goals_json']),
-                event_tree=json.loads(events_data[0]['chain_json']),
+                agent_profile=agent_profile,
+                goals=goals,
+                event_tree=event_tree,
                 agent_id=int(agent_id),
                 user_id=int(user_id),
-                user_input=content,
+                user_input=content,  # 传入当前用户输入
                 session_id=session_id
             )
 
-
+            # 保存会话数据
             dialog_json = {
                 "dialog_history": messages,
                 "session_data": new_session_data
             }
-
-            # 检查会话是否已存在
-            existing = db._execute_query(
-                "SELECT * FROM dialogs WHERE session_id = %s",
-                (session_id,)
-            )
-
+            status = "ended" if new_session_data.get('exit_requested') else "active"
+            
+            # 更新或创建会话记录
+            existing = db._execute_query("SELECT * FROM dialogs WHERE session_id = %s", (session_id,))
             if existing:
-                # 更新现有会话
                 db._execute_update(
-                    """UPDATE dialogs
-                       SET dialog_json = %s,
-                           status      = %s,
-                           updated_at  = NOW()
-                       WHERE session_id = %s""",
-                    (json.dumps(dialog_json, ensure_ascii=False),
-                     "ended" if new_session_data.get('exit_requested') else "active",
-                     session_id)
+                    "UPDATE dialogs SET dialog_json = %s, status = %s, updated_at = NOW() WHERE session_id = %s",
+                    (json.dumps(dialog_json, ensure_ascii=False), status, session_id)
                 )
             else:
-                # 创建新会话
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 db._execute_update(
-                    """INSERT INTO dialogs (session_id, user_id, agent_id, status,
-                                            start_time, dialog_json, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())""",
-                    (session_id, int(user_id), int(agent_id),
-                     "active", current_time, json.dumps(dialog_json, ensure_ascii=False))
+                    "INSERT INTO dialogs (session_id, user_id, agent_id, status, start_time, dialog_json, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
+                    (session_id, int(user_id), int(agent_id), status, current_time, json.dumps(dialog_json, ensure_ascii=False))
                 )
 
-        # 更新会话状态到缓存
-        session[session_key] = new_session_data
-        session.permanent = True
-
-        # 获取最后一条AI回复
+        # 提取智能体回复（取最后一条assistant消息）
         ai_replies = [msg['content'] for msg in messages if msg['role'] == 'assistant']
         last_reply = ai_replies[-1] if ai_replies else "（暂时无法回复）"
 
-        # 构造响应
+        # 构建响应：明确单次交互结束，返回结果
         response = {
             "agent_id": agent_id,
             "content": last_reply,
             "session_id": session_id,
-            "waiting_for_input": new_session_data.get('waiting_for_input', True),
-            "status": "ended" if new_session_data.get('exit_requested') else "active"
+            "waiting_for_input": new_session_data.get('waiting_for_input', True),  # 前端可根据此判断是否需要继续发送请求
+            "status": status
         }
-
         return jsonify(response), 200
 
-    except json.JSONDecodeError as e:
-        return jsonify({"error": f"JSON解析失败：{str(e)}"}), 500
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": f"日常交互异常：{str(e)}"}), 500
 
 

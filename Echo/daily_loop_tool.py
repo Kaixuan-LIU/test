@@ -288,11 +288,8 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
 
     # 获取当前时间和状态
     now = datetime.now()
-    current_time_str = now.strftime("%H:%M")
     current_time_obj = now.time()
-
-    # 设置默认状态
-    current_activity = "自由时间"
+    current_activity = "空闲时间"
     current_status = "空闲"
 
     # 创建临时解析的时间对象列表
@@ -313,6 +310,14 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
         except Exception as e:
             print(f"⚠️ 时间表解析异常: {e}")
             continue
+
+    # 查找当前时间段的活动
+    for slot in temp_parsed_schedule:
+        # 解析槽位时间为时间对象
+        if slot["start_time_obj"] <= current_time_obj <= slot["end_time_obj"]:
+            current_activity = slot["activity"]
+            current_status = slot["status"]
+            break
 
     def evaluate_state_change(messages, agent_profile, goals, event_tree):
         base_attrs = agent_profile.get("基础属性", {})
@@ -589,15 +594,13 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
                     update_daily_session(session_id, session_data, False)
                     return messages, name, session_data, session_id
 
+                # 修复：无论什么状态，每次智能体回复后都应该返回响应
                 # 非空闲状态下主动结束当前轮对话
                 if current_status != "空闲":
                     print(f"{name}: 我得继续{current_activity}了，我们晚点再聊")
-                    session_data['waiting_for_input'] = False
-                    update_daily_session(session_id, session_data, False)
-                    return messages, name, session_data, session_id
-
-                # 设置等待用户输入状态
-                session_data['waiting_for_input'] = True
+                
+                # 无论何种状态，都在智能体回复后返回结果
+                session_data['waiting_for_input'] = False
                 update_daily_session(session_id, session_data, False)
                 return messages, name, session_data, session_id
 

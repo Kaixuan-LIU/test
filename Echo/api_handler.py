@@ -2,7 +2,9 @@ import requests
 import argparse
 import json
 from typing import List, Dict, Optional, Union
+from datetime import datetime
 
+API_KEY = "sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV"  # 使用你的实际API密钥
 
 class ChatFireAPIClient:
     def __init__(
@@ -165,6 +167,32 @@ class ChatFireAPIClient:
         except requests.exceptions.Timeout:
             print("⚠️ API请求超时，请稍后重试")
             return None
+
+
+def send_event_chain_completed_response(agent_id: int, user_id: int):
+    """发送事件链生成完成的响应"""
+    try:
+        # 构建响应数据
+        response_data = {
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "status": "event_chain_completed",
+            "message": "智能体事件链生成完成",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 调用API发送响应
+        client = ChatFireAPIClient(api_key=API_KEY)
+        response = client.call_api([{"role": "system", "content": json.dumps(response_data)}])
+        
+        if response and 'choices' in response and response['choices']:
+            print(f"✅ 事件链生成完成响应已发送")
+        else:
+            print(f"❌ 事件链生成完成响应发送失败")
+            
+    except Exception as e:
+        print(f"❌ 发送事件链生成完成响应时出错: {e}")
+
 
 def parse_arguments():
     """解析命令行参数"""
