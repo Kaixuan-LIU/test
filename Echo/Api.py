@@ -211,7 +211,7 @@ def event():
     """
     事件对话接口：基于dialogs表的会话管理
     请求体：{"agent_id": "string", "issue_id": "string"（可为空）, "content": "string", "user_id": "string", "session_id": "string"（可选）}
-    返回：{"agent_id": "string", "issue_id": "string", "content": "string", "session_id": "string", "is_ended": bool, "status": string}
+    返回：{"agent_id": "string", "issue_id": "string", "content": "string", "session_id": "string", "is_ended": bool, "status": string, "async_processing": bool}
     """
     # 1. 解析请求参数
     req_data = request.json
@@ -252,14 +252,23 @@ def event():
         )
 
         # 构造响应
-        return jsonify({
+        response_data = {
             "agent_id": agent_id,
             "issue_id": event_result["issue_id"],
             "content": event_result["content"],
             "session_id": event_result["session_id"],
             "is_ended": event_result["is_ended"],
             "status": event_result["event_status"]
-        }), 200
+        }
+        
+        # 如果是E001事件成功完成，标记正在进行异步处理
+        if event_result["issue_id"] == "E001" and event_result["event_status"] == "成功":
+            response_data["async_processing"] = True
+            response_data["message"] = "事件完成，正在后台生成后续内容"
+        else:
+            response_data["async_processing"] = False
+
+        return jsonify(response_data), 200
 
     except json.JSONDecodeError as e:
         return jsonify({"error": f"会话数据解析失败：{str(e)}"}), 500
@@ -267,6 +276,77 @@ def event():
         import traceback
         traceback.print_exc()
         return jsonify({"error": f"事件处理失败：{str(e)}"}), 500
+
+def async_generate_goals_and_events(agent_id: int, user_id: int):
+    """异步生成目标和事件链"""
+    try:
+        # 导入主函数中的生成方法
+        from main import generate_goals_and_next_events
+        
+        # 生成目标和下一阶段事件
+        success = generate_goals_and_next_events(agent_id, user_id)
+        if success:
+            print(f"✅ 异步目标和下一阶段事件生成完成 (agent_id: {agent_id})")
+            # 可以在这里添加通知逻辑，比如发送WebSocket消息或调用回调接口
+        else:
+            print(f"❌ 异步目标和下一阶段事件生成失败 (agent_id: {agent_id})")
+    except Exception as e:
+        print(f"⚠️ 异步生成目标和下一阶段事件时出错: {e}")
+        import traceback
+        traceback.print_exc()
+
+# 新增事件处理状态查询接口
+@app.route('/api/event/status', methods=['GET'])
+def event_processing_status():
+    """
+    查询事件处理状态接口
+    请求参数：agent_id
+    返回：{"agent_id": "string", "status": "pending/in_progress/completed", "message": "状态描述"}
+    """
+    agent_id = request.args.get("agent_id")
+    
+    if not agent_id:
+        return jsonify({"error": "缺少agent_id参数"}), 400
+    
+    try:
+        # 检查数据库中的处理状态
+        with MySQLDB(**DB_CONFIG) as db:
+            goals_data = db.get_agent_goals(agent_id)
+            events_data = db.get_agent_event_chains(agent_id)
+            
+            if goals_data and events_data:
+                # 检查事件链中的事件总数
+                chain_json = events_data[0]['chain_json']
+                event_tree = json.loads(chain_json).get('event_tree', [])
+                
+                # 计算总事件数
+                total_events = sum(len(stage.get('事件列表', [])) for stage in event_tree)
+                
+                # 根据事件数量判断状态
+                if total_events == 1:
+                    status = "in_progress"
+                    message = "正在生成目标和事件链"
+                elif total_events > 1 and total_events < 15:  # 假设完整的第一阶段应该有15个以上事件
+                    status = "in_progress"
+                    message = "正在生成下一阶段事件"
+                elif total_events >= 15:
+                    status = "completed"
+                    message = "目标和事件链生成完成"
+                else:
+                    status = "pending"
+                    message = "等待处理"
+            else:
+                status = "pending"
+                message = "等待处理"
+        
+        return jsonify({
+            "agent_id": agent_id,
+            "status": status,
+            "message": message
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"查询状态失败：{str(e)}"}), 500
 
 # 增量事件查询接口（供 APP 定时轮询）
 @app.route('/api/v1/events', methods=['GET'])

@@ -553,50 +553,39 @@ def run_event_loop(
         except Exception as e:
             print(f"❌ 数据库状态更新失败: {str(e)}")
 
-    # 8. 如果当前事件成功完成，检查是否需要生成目标和下一阶段的事件
+    # 8. 如果当前事件成功完成，检查是否需要生成下一阶段的事件
     if event_status == "成功":
-        try:
-            # 检查是否需要生成目标和下一阶段事件
-            from Event_builder import EventTreeGenerator
-            from Agent_builder import AgentBuilder
-            
-            # 创建AgentBuilder实例
-            agent_builder = AgentBuilder(api_key=client.api_key, user_id=user_id)
-            
-            generator = EventTreeGenerator(
-                agent_name=agent_name,
-                api_key=client.api_key,
-                agent_id=agent_id,
-                user_id=user_id,
-                agent_builder=agent_builder  # 传递AgentBuilder实例
-            )
-            
-            # 确保正确识别初始事件E001，即使在事件结束后
-            # 检查当前处理的事件是否是初始事件E001
-            initial_event = get_intro_event(session_data["event_tree"])
-            is_initial_event = initial_event and initial_event.get("event_id") == current_event_id
-            
-            # 如果是初始事件E001成功完成，直接触发生成目标和下一阶段事件
-            if is_initial_event and current_event_id == "E001":
-                try:
-                    # 导入主函数中的生成方法
+        # 对所有成功完成的事件都采用异步处理
+        from threading import Thread
+        
+        def async_next_stage_processing(agent_id, user_id, current_event_id):
+            try:
+                # 检查是否需要生成目标和下一阶段事件
+                from Event_builder import EventTreeGenerator
+                from Agent_builder import AgentBuilder
+                
+                # 创建AgentBuilder实例
+                agent_builder = AgentBuilder(api_key=client.api_key, user_id=user_id)
+                
+                generator = EventTreeGenerator(
+                    agent_name=agent_name,
+                    api_key=client.api_key,
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    agent_builder=agent_builder
+                )
+                
+                # 如果是初始事件E001，生成目标和下一阶段事件
+                if current_event_id == "E001":
                     from main import generate_goals_and_next_events
-                    
-                    # 生成目标和下一阶段事件
                     success = generate_goals_and_next_events(agent_id, user_id)
                     if success:
                         print(f"✅ 目标和下一阶段事件生成完成 (agent_id: {agent_id})")
-                        # 发送事件链生成完成的响应
                         send_event_chain_completed_response(agent_id, user_id)
                     else:
                         print(f"❌ 目标和下一阶段事件生成失败 (agent_id: {agent_id})")
-                except Exception as e:
-                    print(f"⚠️ 生成目标和下一阶段事件时出错: {e}")
-                    import traceback
-                    traceback.print_exc()
-            # 对于其他已完成的事件，检查是否需要生成下一阶段事件
-            elif current_event_id != "E001":
-                try:
+                else:
+                    # 对于其他事件，检查是否需要生成下一阶段事件
                     # 获取当前事件链
                     with MySQLDB(**db_config) as db:
                         events_data = db.get_agent_event_chains(agent_id)
@@ -631,12 +620,17 @@ def run_event_loop(
                                         chain_json=updated_chain_json
                                     )
                                 print(f"✅ 新阶段事件已添加到事件链中")
-                except Exception as e:
-                    print(f"⚠️ 生成下一阶段事件时出错: {e}")
-                    import traceback
-                    traceback.print_exc()
-        except Exception as e:
-            print(f"⚠️ 初始化事件生成器时出错: {e}")
+            except Exception as e:
+                print(f"⚠️ 异步生成下一阶段事件时出错: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # 启动异步任务
+        thread = Thread(target=async_next_stage_processing, args=(agent_id, user_id, current_event_id))
+        thread.daemon = True
+        thread.start()
+        
+        print(f"🔄 已启动异步任务生成下一阶段事件 (当前事件: {current_event_id}, agent_id: {agent_id})")
 
     # 9. 确定下一个事件
     next_event = get_next_event_from_chain(session_data["event_tree"], dialog_history,
