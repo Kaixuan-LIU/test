@@ -212,14 +212,13 @@ class EventTreeGenerator:
 
 生成要求：
 1. 只为当前阶段生成事件，不要涉及其他阶段
-2. 包含3个主线事件、5个支线事件和8个日常事件
+2. 包含3个主线事件、5个支线事件
 3. 事件ID需从{self._get_next_event_id()}开始连续编号
 4. 主线事件 importance ≥ 4，必须带有依赖（dependencies）
 5. 支线事件 importance 为 3~4，无需依赖但应有明确触发条件
-6. 日常事件 importance ≤ 2，trigger_conditions 可留空
-7. 所有事件必须包含以下字段：
+6. 所有事件必须包含以下字段：
    - event_id: 事件ID
-   - type: 事件类型（主线/支线/日常）
+   - type: 事件类型（主线/支线）
    - name: 事件标题
    - time: 具体时间
    - location: 具体地点
@@ -262,6 +261,12 @@ class EventTreeGenerator:
         }}
     ]
 }}
+严格要求：
+仅输出JSON对象，不包含任何解释、说明或多余文本
+确保JSON格式完全正确（逗号分隔、引号闭合、无多余逗号）
+键名和字符串值必须使用双引号（"），而非单引号（'）
+数组和对象末尾不得有多余逗号
+不要使用任何特殊字符或控制字符
         """
 
     def _get_next_event_id(self) -> str:
@@ -561,35 +566,99 @@ class EventTreeGenerator:
         """更健壮的JSON提取方法"""
         try:
             # 尝试直接解析整个内容
-            if content.strip().startswith('{'):
-                return json.loads(content)
+            if content.strip().startswith('{') or content.strip().startswith('['):
+                result = json.loads(content)
+                print("✅ 直接解析成功")
+                return result
 
-            # 尝试提取JSON对象
-            start_index = content.find('{')
-            end_index = content.rfind('}')
-            if start_index != -1 and end_index != -1 and end_index > start_index:
-                json_str = content[start_index:end_index + 1]
-                return json.loads(json_str)
+                # 尝试提取JSON对象或数组
+                start_index = -1
+                end_index = -1
+
+                # 查找对象开始位置
+                obj_start = content.find('{')
+                arr_start = content.find('[')
+
+                if obj_start != -1 and (arr_start == -1 or obj_start < arr_start):
+                    start_index = obj_start
+                    # 查找对应的结束大括号
+                    brace_count = 0
+                    for i in range(start_index, len(content)):
+                        if content[i] == '{':
+                            brace_count += 1
+                        elif content[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_index = i
+                                break
+                elif arr_start != -1:
+                    start_index = arr_start
+                    # 查找对应的结束方括号
+                    bracket_count = 0
+                    for i in range(start_index, len(content)):
+                        if content[i] == '[':
+                            bracket_count += 1
+                        elif content[i] == ']':
+                            bracket_count -= 1
+                            if bracket_count == 0:
+                                end_index = i
+                                break
+
+                if start_index != -1 and end_index != -1 and end_index > start_index:
+                    json_str = content[start_index:end_index + 1]
+                    safe_print(f"🔍 提取JSON片段，长度: {len(json_str)}")
+                    result = json.loads(json_str)
+                    safe_print("✅ 提取解析成功")
+                    return result
 
             # 尝试处理代码块
             if '```json' in content:
                 json_str = content.split('```json')[1].split('```')[0].strip()
                 return json.loads(json_str)
+                safe_print("✅ 代码块解析成功")
+                return result
             elif '```' in content:
-                json_str = content.split('```')[1].split('```')[0].strip()
-                return json.loads(json_str)
+                parts = content.split('```')
+                if len(parts) >= 2:
+                    json_str = parts[1].strip()
+                    result = json.loads(json_str)
+                    print("✅ 代码块解析成功")
+                    return result
+
 
         except json.JSONDecodeError as e:
-            print(f"JSON解析失败: {e}")
+            print(f"⚠️ JSON解析失败: {e}")
+            error_pos = e.pos if hasattr(e, 'pos') else 0
+            start = max(0, error_pos - 50)
+            end = min(len(content), error_pos + 50)
+            print(f"🔍 错误位置附近的内容: {content[start:end]}")
 
-        # 最终尝试修复常见错误
-        try:
-            # 修复常见的格式错误
-            fixed_content = re.sub(r',\s*]', ']', content)  # 修复多余的逗号
-            fixed_content = re.sub(r',\s*}', '}', fixed_content)
-            fixed_content = re.sub(r'[\u0000-\u001F]', '', fixed_content)  # 移除控制字符
-            return json.loads(fixed_content)
-        except:
+            # 最终尝试修复常见错误
+            try:
+                print("🔄 尝试修复JSON格式...")
+                # 修复常见的格式错误
+                fixed_content = content.replace('\n', '').replace('\r', '')
+                # 移除括号后的多余空格
+                fixed_content = re.sub(r'(?<=[{\[,])\s+', '', fixed_content)
+                # 移除括号前的多余空格
+                fixed_content = re.sub(r'\s+(?=[}\]])', '', fixed_content)
+                # 修复相邻字符串缺少逗号的情况
+                fixed_content = re.sub(r'(?<=\w)"(?=\w)', r'","', fixed_content)
+                # 修复多余的逗号
+                fixed_content = re.sub(r',\s*]', ']', fixed_content)  # 修复多余的逗号
+                fixed_content = re.sub(r',\s*}', '}', fixed_content)
+                fixed_content = re.sub(r'[\u0000-\u001F]', '', fixed_content)  # 移除控制字符
+
+                # 再次尝试解析
+                if fixed_content.strip().startswith('{') or fixed_content.strip().startswith('['):
+                    result = json.loads(fixed_content)
+                    print("✅ 修复后解析成功")
+                    return result
+
+            except Exception as e:
+                print(f"⚠️ 修复后解析仍失败: {e}")
+
+            print("❌ 所有JSON解析方法都失败")
             return {}
 
     def generate_initial_event_only(self):

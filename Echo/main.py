@@ -13,8 +13,7 @@ from Event_builder import EventTreeGenerator
 from api_handler import ChatFireAPIClient
 from daily_loop_tool import run_daily_loop
 from database import MySQLDB, DB_CONFIG
-from event_loop_tool import run_event_loop, get_intro_event
-
+from event_loop_tool import run_event_loop, get_intro_event, safe_print
 
 # 在文件顶部添加API_KEY定义
 API_KEY = "sk-Jgb98JXxJ0nNfB2vcNoQ0ZZg1B5zYbM1TgsGmc1LOrNPMIPV"  # 使用你的实际API密钥
@@ -315,39 +314,39 @@ def select_next_event(full_event_tree) -> dict:
 
 def generate_goals_and_next_events(agent_id: int, user_id: int = 1):
     """在初始事件完成后生成目标和下一阶段事件"""
-    print(f"🧠 开始生成智能体目标和下一阶段事件 (agent_id: {agent_id})")
-    
-    # 创建数据库连接
-    db = MySQLDB(**DB_CONFIG)
+    safe_print(f"🧠 开始生成智能体目标和下一阶段事件 (agent_id: {agent_id})")
     
     # 获取智能体信息
+    db = MySQLDB(**DB_CONFIG)
     with db as db_conn:
         agent_info = db_conn.get_agent_by_id(agent_id)
         if not agent_info:
-            print(f"❌ 未找到agent_id={agent_id}的智能体")
+            safe_print(f"❌ 未找到agent_id={agent_id}的智能体")
             return False
             
         try:
             agent_data = json.loads(agent_info['full_json'])
             agent_name = agent_data.get('姓名', '未知')
         except json.JSONDecodeError:
-            print(f"❌ 解析agent_id={agent_id}的智能体信息失败")
+            safe_print(f"❌ 解析agent_id={agent_id}的智能体信息失败")
             return False
 
     # 创建AgentBuilder实例
     builder = AgentBuilder(api_key=API_KEY, user_id=user_id)
     
     # 检查是否已经生成了目标
+    db = MySQLDB(**DB_CONFIG)  # 重新创建数据库连接
     with db as db_conn:
         goals_data = db_conn.get_agent_goals(agent_id)
         if goals_data:
-            print(f"✅ 目标已存在，跳过生成 (agent_id: {agent_id})")
+            safe_print(f"✅ 目标已存在，跳过生成 (agent_id: {agent_id})")
         else:
             # 生成目标
-            print(f"🔍 正在生成智能体目标 (agent_id: {agent_id})")
+            safe_print(f"🔍 正在生成智能体目标 (agent_id: {agent_id})")
             try:
                 # 获取生平事件
-                with db as db_conn2:
+                db2 = MySQLDB(**DB_CONFIG)  # 重新创建数据库连接
+                with db2 as db_conn2:
                     life_events_data = db_conn2.get_agent_life_events(agent_id)
                     if life_events_data:
                         life_events_json = life_events_data[0]['event_json']
@@ -356,24 +355,27 @@ def generate_goals_and_next_events(agent_id: int, user_id: int = 1):
                     else:
                         life_events_str = "[]"
                 
+                safe_print(f"🔄 正在调用API生成智能体目标 (agent_id: {agent_id})")
                 goals_json = builder.generate_agent_goals(
                     json.dumps(agent_data, ensure_ascii=False), 
                     life_events_str, 
                     agent_name, 
                     agent_id
                 )
+                safe_print(f"✅ API调用完成 (agent_id: {agent_id})")
                 
                 if goals_json:
-                    print(f"✅ 智能体目标生成完成 (agent_id: {agent_id})")
+                    safe_print(f"✅ 智能体目标生成完成 (agent_id: {agent_id})")
                 else:
-                    print(f"❌ 智能体目标生成失败 (agent_id: {agent_id})")
+                    safe_print(f"❌ 智能体目标生成失败 (agent_id: {agent_id})")
                     return False
                     
             except Exception as e:
-                print(f"❌ 生成目标时出错: {e}")
+                safe_print(f"❌ 生成目标时出错: {e}")
                 return False
 
     # 创建事件生成器并生成下一阶段事件
+    safe_print(f"🔍 创建事件生成器 (agent_id: {agent_id})")
     generator = EventTreeGenerator(
         agent_name=agent_name,
         api_key=API_KEY,
@@ -384,15 +386,16 @@ def generate_goals_and_next_events(agent_id: int, user_id: int = 1):
     
     try:
         # 生成下一阶段事件
+        safe_print(f"🔄 正在生成下一阶段事件 (agent_id: {agent_id})")
         next_events = generator.generate_next_stage_events()
         if next_events:
-            print(f"✅ 下一阶段事件生成完成 (agent_id: {agent_id})")
+            safe_print(f"✅ 下一阶段事件生成完成 (agent_id: {agent_id})")
             return True
         else:
-            print(f"❌ 下一阶段事件生成失败 (agent_id: {agent_id})")
+            safe_print(f"❌ 下一阶段事件生成失败 (agent_id: {agent_id})")
             return False
     except Exception as e:
-        print(f"❌ 生成下一阶段事件时出错: {e}")
+        safe_print(f"❌ 生成下一阶段事件时出错: {e}")
         return False
 
 

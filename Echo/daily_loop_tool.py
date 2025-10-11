@@ -338,6 +338,10 @@ def run_daily_loop(agent_profile: dict, goals: str, event_tree: str, agent_id: i
     4. 不要问候与当前时间不符的内容（如晚上不说"早上好"）
     5. 对话场景：活动状态为空闲时进行日常闲聊，围绕生活小事展开
 
+    【状态特定回复规则】
+    - 当前状态为"一般忙碌"时：回复内容应较短，包含声明自己有点忙的语句，但仍可继续交流
+    - 当前状态为"忙碌"时：第一轮对话中明确返回拒绝交流的意愿和理由，不能有继续交互的问句等内容
+    
     【智能体特征】
     {json.dumps(agent_profile, ensure_ascii=False, indent=2)}
 

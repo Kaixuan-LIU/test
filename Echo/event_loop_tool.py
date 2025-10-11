@@ -11,6 +11,17 @@ from database import MySQLDB, TEST_DB_CONFIG,DB_CONFIG
 def safe_input(prompt):
     print(prompt, end='', flush=True)
     return sys.stdin.readline().rstrip('\n')
+
+
+def safe_print(*args, **kwargs):
+    """安全打印函数，避免在流关闭时抛出异常"""
+    try:
+        print(*args, **kwargs)
+    except (ValueError, OSError):
+        # 忽略流关闭时的异常
+        pass
+
+
 def get_intro_event(event_tree: list) -> dict:
     # 检查事件树是否为空
     if not event_tree:
@@ -557,9 +568,12 @@ def run_event_loop(
     if event_status == "成功":
         # 对所有成功完成的事件都采用异步处理
         from threading import Thread
+        import time
         
         def async_next_stage_processing(agent_id, user_id, current_event_id):
             try:
+                safe_print(f"🔄 异步任务开始处理 (当前事件: {current_event_id}, agent_id: {agent_id})")
+                
                 # 检查是否需要生成目标和下一阶段事件
                 from Event_builder import EventTreeGenerator
                 from Agent_builder import AgentBuilder
@@ -577,53 +591,74 @@ def run_event_loop(
                 
                 # 如果是初始事件E001，生成目标和下一阶段事件
                 if current_event_id == "E001":
+                    safe_print(f"🧠 开始生成目标和下一阶段事件 (agent_id: {agent_id})")
                     from main import generate_goals_and_next_events
+                    safe_print(f"🔄 调用 generate_goals_and_next_events (agent_id: {agent_id})")
                     success = generate_goals_and_next_events(agent_id, user_id)
+                    safe_print(f"✅ generate_goals_and_next_events 执行完成 (agent_id: {agent_id}, success: {success})")
                     if success:
-                        print(f"✅ 目标和下一阶段事件生成完成 (agent_id: {agent_id})")
+                        safe_print(f"✅ 目标和下一阶段事件生成完成 (agent_id: {agent_id})")
                         send_event_chain_completed_response(agent_id, user_id)
                     else:
-                        print(f"❌ 目标和下一阶段事件生成失败 (agent_id: {agent_id})")
+                        safe_print(f"❌ 目标和下一阶段事件生成失败 (agent_id: {agent_id})")
                 else:
                     # 对于其他事件，检查是否需要生成下一阶段事件
+                    safe_print(f"🔍 检查是否需要生成下一阶段事件 (当前事件: {current_event_id}, agent_id: {agent_id})")
                     # 获取当前事件链
+                    safe_print(f"🔄 正在从数据库获取事件链数据 (agent_id: {agent_id})")
                     with MySQLDB(**db_config) as db:
                         events_data = db.get_agent_event_chains(agent_id)
                         if events_data:
+                            safe_print(f"✅ 成功获取事件链数据 (agent_id: {agent_id})")
                             chain_json = events_data[0]['chain_json']
                             event_tree_data = json.loads(chain_json).get('event_tree', [])
                             
                             # 计算当前事件数量
                             total_events = sum(len(stage.get('事件列表', [])) for stage in event_tree_data)
+                            safe_print(f"📊 当前事件总数: {total_events}")
                             
                             # 生成下一阶段事件
+                            safe_print(f"🔄 正在获取生命周期阶段信息...")
                             stages = generator.generate_lifecycle_stages()
-                            if len(stages) > len(event_tree_data):  # 还有未生成的阶段
+                            if stages and len(stages) > len(event_tree_data):  # 还有未生成的阶段
                                 next_stage = stages[len(event_tree_data)]
-                                print(f"🔍 正在生成下一阶段事件：{next_stage.get('阶段', '未知阶段')} ...")
+                                safe_print(f"🔍 正在生成下一阶段事件：{next_stage.get('阶段', '未知阶段')} ...")
                                 next_stage_events = generator.generate_events_for_stage(next_stage, total_events + 1)
                                 
-                                # 将新阶段事件添加到事件树中
-                                event_tree_data.append(next_stage_events)
-                                
-                                # 更新数据库中的事件链
-                                event_chain_data = {
-                                    "version": "1.0",
-                                    "event_tree": event_tree_data
-                                }
-                                updated_chain_json = json.dumps(event_chain_data, ensure_ascii=False, indent=2)
-                                # 创建新的数据库连接实例而不是重用已关闭的连接
-                                with MySQLDB(**db_config) as new_db:
-                                    new_db.insert_agent_event_chain(
-                                        user_id=user_id,
-                                        agent_id=agent_id,
-                                        chain_json=updated_chain_json
-                                    )
-                                print(f"✅ 新阶段事件已添加到事件链中")
+                                if next_stage_events:
+                                    # 将新阶段事件添加到事件树中
+                                    event_tree_data.append(next_stage_events)
+                                    
+                                    # 更新数据库中的事件链
+                                    event_chain_data = {
+                                        "version": "1.0",
+                                        "event_tree": event_tree_data
+                                    }
+                                    updated_chain_json = json.dumps(event_chain_data, ensure_ascii=False, indent=2)
+                                    # 创建新的数据库连接实例而不是重用已关闭的连接
+                                    safe_print(f"🔄 正在更新数据库中的事件链 (agent_id: {agent_id})")
+                                    with MySQLDB(**db_config) as new_db:
+                                        new_db.insert_agent_event_chain(
+                                            user_id=user_id,
+                                            agent_id=agent_id,
+                                            chain_json=updated_chain_json
+                                        )
+                                    safe_print(f"✅ 新阶段事件已添加到事件链中")
+                                else:
+                                    safe_print(f"⚠️ 下一阶段事件生成失败")
+                        else:
+                            safe_print(f"⚠️ 未找到事件链数据 (agent_id: {agent_id})")
+                            
             except Exception as e:
-                print(f"⚠️ 异步生成下一阶段事件时出错: {e}")
+                safe_print(f"⚠️ 异步生成下一阶段事件时出错: {e}")
                 import traceback
-                traceback.print_exc()
+                try:
+                    traceback.print_exc()
+                except (ValueError, OSError):
+                    # 忽略流关闭时的异常
+                    pass
+            finally:
+                safe_print(f"🏁 异步任务处理完成 (当前事件: {current_event_id}, agent_id: {agent_id})")
         
         # 启动异步任务
         thread = Thread(target=async_next_stage_processing, args=(agent_id, user_id, current_event_id))

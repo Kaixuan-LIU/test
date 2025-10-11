@@ -314,27 +314,39 @@ def event_processing_status():
             goals_data = db.get_agent_goals(agent_id)
             events_data = db.get_agent_event_chains(agent_id)
             
-            if goals_data and events_data:
+            if events_data:
                 # 检查事件链中的事件总数
                 chain_json = events_data[0]['chain_json']
                 event_tree = json.loads(chain_json).get('event_tree', [])
                 
-                # 计算总事件数
+                # 计算总事件数和阶段数
                 total_events = sum(len(stage.get('事件列表', [])) for stage in event_tree)
+                stage_count = len(event_tree)
                 
-                # 根据事件数量判断状态
-                if total_events == 1:
-                    status = "in_progress"
-                    message = "正在生成目标和事件链"
-                elif total_events > 1 and total_events < 15:  # 假设完整的第一阶段应该有15个以上事件
-                    status = "in_progress"
-                    message = "正在生成下一阶段事件"
-                elif total_events >= 15:
+                # 更准确的状态判断逻辑
+                if stage_count > 1:
+                    # 已经生成了多个阶段
                     status = "completed"
-                    message = "目标和事件链生成完成"
+                    message = f"事件链生成完成 (阶段数: {stage_count}, 事件数: {total_events})"
+                elif total_events > 16:
+                    # 第一阶段完成且有额外事件
+                    status = "in_progress"
+                    message = f"第一阶段完成，准备生成后续阶段 (事件数: {total_events})"
+                elif total_events >= 16:
+                    # 第一阶段刚好完成
+                    status = "in_progress"
+                    message = f"第一阶段完成，准备生成后续阶段 (事件数: {total_events})"
+                elif total_events > 1:
+                    # 正在生成第一阶段事件
+                    status = "in_progress"
+                    message = f"正在生成第一阶段事件 (当前事件数: {total_events})"
                 else:
-                    status = "pending"
-                    message = "等待处理"
+                    # 初始状态
+                    status = "in_progress"
+                    message = f"正在初始化事件链 (事件数: {total_events})"
+            elif goals_data:
+                status = "in_progress"
+                message = "正在生成事件链"
             else:
                 status = "pending"
                 message = "等待处理"
